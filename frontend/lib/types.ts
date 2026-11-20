@@ -13,6 +13,10 @@ export interface Lesson {
   title: string;
   description: string | null;
   video_path: string | null;
+  video_public_id: string | null;
+  video_original_name: string | null;
+  video_mime_type: string | null;
+  video_size: number | null;
   video_status: "pending" | "ready" | "failed";
   sort_order: number;
 }

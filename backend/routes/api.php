@@ -34,5 +34,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/lessons/{lesson}', [LessonController::class, 'destroy']);
 
         Route::post('/lessons/{lesson}/video', [VideoController::class, 'upload']);
+        Route::delete('/lessons/{lesson}/video', [VideoController::class, 'destroy']);
     });
 });

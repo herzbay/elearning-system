@@ -9,7 +9,9 @@ use Illuminate\Http\Request;
 
 class LessonController extends Controller
 {
-    // Admin: membuat lesson dalam course
+    /**
+     * Admin: membuat lesson dalam course.
+     */
     public function store(Request $request, Course $course)
     {
         $validated = $request->validate([
@@ -19,23 +21,26 @@ class LessonController extends Controller
         ]);
 
         $lesson = $course->lessons()->create([
-            ...$validated,
+            'title' => $validated['title'],
+            'description' => $validated['description'] ?? null,
             'sort_order' => $validated['sort_order']
-                ?? ($course->lessons()->count()),
+                ?? $course->lessons()->count(),
         ]);
 
         return response()->json([
-            'message' => 'Lesson berhasil dibuat.',
-            'lesson' => $lesson,
+            'message' => 'Lesson berhasil ditambahkan.',
+            'lesson' => $lesson->fresh(),
         ], 201);
     }
 
-    // Admin: mengubah lesson
+    /**
+     * Admin: memperbarui lesson.
+     */
     public function update(Request $request, Lesson $lesson)
     {
         $validated = $request->validate([
             'title' => ['sometimes', 'required', 'string', 'max:255'],
-            'description' => ['nullable', 'string'],
+            'description' => ['sometimes', 'nullable', 'string'],
             'sort_order' => ['sometimes', 'integer', 'min:0'],
         ]);
 
@@ -43,11 +48,13 @@ class LessonController extends Controller
 
         return response()->json([
             'message' => 'Lesson berhasil diperbarui.',
-            'lesson' => $lesson,
+            'lesson' => $lesson->fresh(),
         ]);
     }
 
-    // Admin: menghapus lesson
+    /**
+     * Admin: menghapus lesson.
+     */
     public function destroy(Lesson $lesson)
     {
         $lesson->delete();
