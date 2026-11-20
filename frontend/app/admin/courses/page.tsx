@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   FileText,
   Loader2,
+  GraduationCap,
 } from "lucide-react";
 
 export default function AdminCoursesPage() {
@@ -177,6 +178,10 @@ export default function AdminCoursesPage() {
     } catch {
       toast.error("Gagal menghapus course.");
     }
+  }
+
+  function openLessons(course: Course) {
+    router.push(`/admin/courses/${course.id}/lessons`);
   }
 
   const filteredCourses = courses.filter((course) =>
@@ -371,6 +376,15 @@ export default function AdminCoursesPage() {
                         <td className="px-6 py-4">
                           <div className="flex justify-end gap-2">
                             <button
+                              onClick={() => openLessons(course)}
+                              className="flex h-9 items-center gap-2 rounded-lg border border-teal-200 px-3 text-xs font-medium text-teal-700 transition hover:bg-teal-50"
+                              title="Kelola lesson"
+                            >
+                              <GraduationCap size={16} />
+                              Lesson
+                            </button>
+
+                            <button
                               onClick={() => openEditModal(course)}
                               className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
                               title="Edit course"
@@ -418,12 +432,20 @@ export default function AdminCoursesPage() {
                       </span>
                     </div>
 
-                    <div className="mt-4 flex items-center justify-between">
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                       <span className="text-xs text-slate-500">
                         {course.lessons_count ?? 0} lesson
                       </span>
 
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => openLessons(course)}
+                          className="flex h-9 items-center gap-2 rounded-lg border border-teal-200 px-3 text-xs font-medium text-teal-700"
+                        >
+                          <GraduationCap size={14} />
+                          Lesson
+                        </button>
+
                         <button
                           onClick={() => openEditModal(course)}
                           className="flex h-9 items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600"
@@ -565,9 +587,7 @@ export default function AdminCoursesPage() {
                       Menyimpan...
                     </>
                   ) : (
-                    <>
-                      {editingCourse ? "Simpan Perubahan" : "Tambah Course"}
-                    </>
+                    editingCourse ? "Simpan Perubahan" : "Tambah Course"
                   )}
                 </button>
               </div>
