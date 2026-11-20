@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft,
   BookOpen,
+  UserRound,
   Plus,
   Pencil,
   Trash2,
@@ -13,13 +14,37 @@ import {
   Save,
   Upload,
   Video,
-  Play,
   FileVideo,
+  Sun,
+  Moon,
+  Layers3,
+  CheckCircle2,
+  AlertTriangle,
+  Clock,
+  Play,
 } from "lucide-react";
 import { toast } from "sonner";
+
 import { useAuth } from "@/components/AuthProvider";
+import { useTheme } from "@/components/ThemeProvider";
 import api from "@/lib/api";
-import { Course, Lesson } from "@/lib/types";
+
+interface Course {
+  title: string;
+}
+
+interface Lesson {
+  id: number;
+  title: string;
+  description?: string | null;
+  sort_order: number;
+  video_path?: string | null;
+  video_public_id?: string | null;
+  video_original_name?: string | null;
+  video_mime_type?: string | null;
+  video_size?: number | null;
+  video_status?: string | null;
+}
 
 interface LessonForm {
   title: string;
@@ -43,45 +68,72 @@ const ALLOWED_VIDEO_TYPES = [
   "video/webm",
 ];
 
+function getErrorMessage(error: unknown, fallback: string) {
+  if (typeof error === "object" && error !== null && "response" in error) {
+    const response = (
+      error as {
+        response?: {
+          data?: {
+            message?: string;
+          };
+        };
+      }
+    ).response;
+
+    return response?.data?.message || fallback;
+  }
+
+  return fallback;
+}
+
 function LessonsContent() {
   const params = useParams<{ id: string }>();
   const courseId = params.id;
 
   const router = useRouter();
   const { user, loading } = useAuth();
+  const { theme, toggleTheme } = useTheme();
 
+  const isDark = theme === "dark";
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [course, setCourse] = useState<Course | null>(null);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [fetching, setFetching] = useState(true);
-  const [saving, setSaving] = useState(false);
 
+  const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingLesson, setEditingLesson] = useState<Lesson | null>(null);
+
   const [form, setForm] = useState<LessonForm>(emptyForm);
 
   const [selectedVideo, setSelectedVideo] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+
   const [deletingVideo, setDeletingVideo] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Lesson | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [showDeleteVideoConfirm, setShowDeleteVideoConfirm] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
       setFetching(true);
 
-      const response = await api.get<Course>(
-        `/admin/courses/${courseId}`
-      );
+      const response = await api.get(`/admin/courses/${courseId}`);
 
-      setCourse(response.data);
+      setCourse(response.data.course ?? response.data);
+
+      const lessonData =
+        response.data.lessons ?? response.data.course?.lessons ?? [];
+
       setLessons(
-        [...(response.data.lessons || [])].sort(
-          (a, b) => a.sort_order - b.sort_order
+        [...lessonData].sort(
+          (a: Lesson, b: Lesson) => a.sort_order - b.sort_order
         )
       );
-    } catch {
-      toast.error("Gagal memuat data lesson.");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Gagal mengambil data materi."));
     } finally {
       setFetching(false);
     }
@@ -103,109 +155,110 @@ function LessonsContent() {
     fetchData();
   }, [user, loading, router, fetchData]);
 
-  const resetVideoForm = () => {
+  function resetVideoForm() {
     setSelectedVideo(null);
     setUploadProgress(0);
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-  };
+  }
 
-  const openCreateModal = () => {
+  function closeModal() {
+    if (saving || uploading || deletingVideo) return;
+
+    setModalOpen(false);
     setEditingLesson(null);
+    setForm(emptyForm);
+    resetVideoForm();
+  }
+
+  function openCreateModal() {
+    setEditingLesson(null);
+
     setForm({
       ...emptyForm,
       sort_order: lessons.length + 1,
     });
+
     resetVideoForm();
     setModalOpen(true);
-  };
+  }
 
-  const openEditModal = (lesson: Lesson) => {
+  function openEditModal(lesson: Lesson) {
     setEditingLesson(lesson);
+
     setForm({
       title: lesson.title,
       description: lesson.description || "",
       sort_order: lesson.sort_order,
     });
+
     resetVideoForm();
     setModalOpen(true);
-  };
+  }
 
-  const handleVideoSelect = (file?: File) => {
+  function handleVideoSelect(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
     if (!file) return;
 
     if (!ALLOWED_VIDEO_TYPES.includes(file.type)) {
-      toast.error("Format video tidak didukung.");
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      toast.error(
+        "Format video tidak didukung. Gunakan MP4, MOV, AVI, MKV, atau WebM."
+      );
+      event.target.value = "";
       return;
     }
 
     if (file.size > MAX_VIDEO_SIZE) {
-      toast.error("Ukuran video maksimal 500 MB.");
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      toast.error("Ukuran video maksimal adalah 500 MB.");
+      event.target.value = "";
       return;
     }
 
     setSelectedVideo(file);
-  };
+  }
 
-  const uploadVideo = async (lessonId: number) => {
+  async function uploadVideo(lessonId: number) {
     if (!selectedVideo) return;
 
-    const payload = new FormData();
-    payload.append("video", selectedVideo);
+    const formData = new FormData();
+    formData.append("video", selectedVideo);
 
     try {
       setUploading(true);
       setUploadProgress(0);
 
-      await api.post(
-        `/admin/lessons/${lessonId}/video`,
-        payload,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-          onUploadProgress: (event) => {
-            if (event.total) {
-              setUploadProgress(
-                Math.round((event.loaded * 100) / event.total)
-              );
-            }
-          },
-        }
-      );
+      await api.post(`/admin/lessons/${lessonId}/video`, formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const progress = Math.round(
+              (progressEvent.loaded * 100) / progressEvent.total
+            );
+
+            setUploadProgress(progress);
+          }
+        },
+      });
 
       toast.success("Video berhasil diunggah.");
-      setSelectedVideo(null);
-      setUploadProgress(0);
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    } catch (error: any) {
-      const message =
-        error.response?.data?.message ||
-        "Gagal mengunggah video.";
-
-      toast.error(message);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Gagal mengunggah video."));
       throw error;
     } finally {
       setUploading(false);
     }
-  };
+  }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
 
     if (!form.title.trim()) {
-      toast.error("Judul lesson wajib diisi.");
+      toast.error("Judul materi wajib diisi.");
       return;
     }
 
@@ -221,28 +274,26 @@ function LessonsContent() {
       let lessonId: number;
 
       if (editingLesson) {
-        await api.put(
+        const response = await api.put(
           `/admin/lessons/${editingLesson.id}`,
           payload
         );
 
-        lessonId = editingLesson.id;
-        toast.success("Lesson berhasil diperbarui.");
+        lessonId = response.data.lesson?.id ?? editingLesson.id;
+
+        toast.success("Materi berhasil diperbarui.");
       } else {
-      const response = await api.post(
-        `/admin/courses/${courseId}/lessons`,
-        payload
-      );
+        const response = await api.post(
+          `/admin/courses/${courseId}/lessons`,
+          payload
+        );
 
-      lessonId = response.data.lesson?.id ?? response.data.id;
+        lessonId = response.data.lesson?.id ?? response.data.id;
 
-      if (!lessonId) {
-        throw new Error("ID lesson tidak ditemukan dari response server.");
-      }
-        toast.success("Lesson berhasil ditambahkan.");
+        toast.success("Materi berhasil ditambahkan.");
       }
 
-      if (selectedVideo) {
+      if (selectedVideo && lessonId) {
         await uploadVideo(lessonId);
       }
 
@@ -252,447 +303,719 @@ function LessonsContent() {
       resetVideoForm();
 
       await fetchData();
-    } catch (error: any) {
-      if (error.response?.data?.message && !selectedVideo) {
-        toast.error(error.response.data.message);
-      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Gagal menyimpan materi."));
     } finally {
       setSaving(false);
     }
-  };
+  }
 
-  const handleDeleteVideo = async () => {
-    if (!editingLesson || !editingLesson.video_path) return;
-
-    const confirmed = window.confirm(
-      "Apakah Anda yakin ingin menghapus video lesson ini?"
-    );
-
-    if (!confirmed) return;
+  async function confirmDeleteVideo() {
+    if (!editingLesson) return;
 
     try {
       setDeletingVideo(true);
 
-      await api.delete(
-        `/admin/lessons/${editingLesson.id}/video`
-      );
+      await api.delete(`/admin/lessons/${editingLesson.id}/video`);
 
       toast.success("Video berhasil dihapus.");
 
-      const updatedLesson = {
+      setEditingLesson({
         ...editingLesson,
         video_path: null,
         video_public_id: null,
         video_original_name: null,
         video_mime_type: null,
         video_size: null,
-        video_status: "pending" as const,
-      };
+        video_status: null,
+      });
 
-      setEditingLesson(updatedLesson);
       setSelectedVideo(null);
+      setShowDeleteVideoConfirm(false);
+
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
 
       await fetchData();
-    } catch (error: any) {
-      toast.error(
-        error.response?.data?.message ||
-        "Gagal menghapus video."
-      );
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Gagal menghapus video."));
     } finally {
       setDeletingVideo(false);
     }
-  };
+  }
 
-  const handleDelete = async (lesson: Lesson) => {
-    const confirmed = window.confirm(
-      `Apakah Anda yakin ingin menghapus lesson "${lesson.title}"?`
-    );
-
-    if (!confirmed) return;
+  async function confirmDeleteLesson() {
+    if (!deleteTarget) return;
 
     try {
-      await api.delete(`/admin/lessons/${lesson.id}`);
-      toast.success("Lesson berhasil dihapus.");
-      await fetchData();
-    } catch {
-      toast.error("Gagal menghapus lesson.");
-    }
-  };
+      setDeleting(true);
 
-  const formatFileSize = (bytes: number) => {
+      await api.delete(`/admin/lessons/${deleteTarget.id}`);
+
+      toast.success("Materi berhasil dihapus.");
+
+      setDeleteTarget(null);
+      await fetchData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Gagal menghapus materi."));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function formatFileSize(bytes?: number | null) {
+    if (!bytes) return "-";
+
     if (bytes < 1024 * 1024) {
       return `${(bytes / 1024).toFixed(1)} KB`;
     }
 
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
+  }
 
-  if (loading || fetching) {
+  const cardClass = isDark
+    ? "border-slate-700 bg-slate-800"
+    : "border-slate-200 bg-white";
+
+  const mutedText = isDark ? "text-slate-400" : "text-slate-500";
+  const headingText = isDark ? "text-white" : "text-slate-900";
+
+  const inputClass = isDark
+    ? "border-slate-600 bg-slate-900 text-white placeholder:text-slate-500 focus:border-teal-400"
+    : "border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:border-teal-500";
+
+  if (loading || !user || user.role !== "admin") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+      <div
+        className={`flex min-h-screen items-center justify-center ${
+          isDark ? "bg-slate-900" : "bg-slate-50"
+        }`}
+      >
         <Loader2 className="h-8 w-8 animate-spin text-teal-600" />
       </div>
     );
   }
 
-  if (!user || user.role !== "admin" || !course) return null;
-
   return (
-    <main className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-5 sm:px-6 lg:px-8">
-          <button
-            onClick={() => router.push("/admin/courses")}
-            className="rounded-xl border border-slate-200 p-2 text-slate-600 transition hover:bg-slate-50"
-            aria-label="Kembali"
-          >
-            <ArrowLeft size={20} />
-          </button>
+    <main className="min-h-svh bg-slate-50 text-slate-900 transition-colors dark:bg-slate-900 dark:text-slate-100">
+      {/* Navbar */}
+      <header className="sticky top-0 z-50 w-full border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+        <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+          {/* Logo dan navigasi */}
+          <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
+            <button
+              type="button"
+              onClick={() => router.push("/admin/courses")}
+              aria-label="Kembali ke Kelola Course"
+              title="Kembali ke Kelola Course"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-teal-500 dark:hover:bg-teal-500/10 dark:hover:text-teal-300"
+            >
+              <ArrowLeft size={18} />
+            </button>
 
-          <div>
-            <h1 className="text-xl font-bold text-slate-800">
-              Kelola Lesson
-            </h1>
-            <p className="mt-1 text-sm text-slate-500">
-              {course.title}
-            </p>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-teal-500 to-teal-700 text-white shadow-md shadow-teal-600/15">
+              <BookOpen size={19} />
+            </div>
+
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-bold tracking-tight text-slate-900 dark:text-white">
+                EduFlow
+              </h1>
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                Administrator Panel
+              </p>
+            </div>
+          </div>
+
+          {/* Account dan tema */}
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <div className="hidden items-center gap-2.5 border-r border-slate-200 pr-3 dark:border-slate-700 sm:flex sm:pr-4">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300">
+                <UserRound size={17} />
+              </div>
+
+              <div className="max-w-[190px]">
+                <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                  Administrator
+                </p>
+                <p className="max-w-[175px] truncate text-[11px] text-slate-500 dark:text-slate-400">
+                  {user.email}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label="Ganti tema"
+              title={theme === "light" ? "Dark Mode" : "Light Mode"}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-teal-500 dark:hover:bg-teal-500/10 dark:hover:text-teal-300"
+            >
+              {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Informasi akun pada mobile */}
+        <div className="border-t border-slate-100 px-4 py-2 sm:hidden dark:border-slate-800">
+          <div className="flex items-center gap-2">
+            <UserRound
+              size={14}
+              className="shrink-0 text-teal-600 dark:text-teal-400"
+            />
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                Administrator
+              </p>
+              <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                {user.email}
+              </p>
+            </div>
           </div>
         </div>
       </header>
 
+      {/* Konten halaman */}
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-          <div>
-            <h2 className="text-lg font-bold text-slate-800">
-              Daftar Materi
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Atur materi dan urutan pembelajaran course ini.
-            </p>
-          </div>
-
-          <button
-            onClick={openCreateModal}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-700"
-          >
-            <Plus size={18} />
-            Tambah Lesson
-          </button>
-        </div>
-
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-teal-50 p-3 text-teal-600">
-                <BookOpen size={22} />
+        {/* Page heading */}
+        <section className="mb-7">
+          <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+            <div>
+              <div
+                className={`mb-3 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
+                  isDark
+                    ? "bg-teal-500/15 text-teal-300"
+                    : "bg-teal-50 text-teal-700"
+                }`}
+              >
+                <Layers3 size={14} />
+                MANAJEMEN MATERI
               </div>
-              <div>
-                <p className="text-sm text-slate-500">Total Lesson</p>
-                <p className="text-2xl font-bold text-slate-800">
-                  {lessons.length}
+
+              <h2 className={`text-2xl font-bold sm:text-3xl ${headingText}`}>
+                Kelola Lesson
+              </h2>
+
+              <p className={`mt-2 max-w-2xl text-sm ${mutedText}`}>
+                Atur urutan, deskripsi, dan video pembelajaran dalam course.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={openCreateModal}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-teal-600/20 transition hover:bg-teal-700"
+            >
+              <Plus size={18} />
+              Tambah Materi
+            </button>
+          </div>
+        </section>
+
+        {/* Informasi course */}
+        <section
+          className={`mb-6 overflow-hidden rounded-2xl border shadow-sm ${cardClass}`}
+        >
+          <div className="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300">
+                <BookOpen size={23} />
+              </div>
+
+              <div className="min-w-0">
+                <p
+                  className={`mb-1 text-xs font-medium uppercase tracking-wider ${mutedText}`}
+                >
+                  Course yang dikelola
+                </p>
+
+                <h3 className={`break-words text-lg font-bold ${headingText}`}>
+                  {course?.title || "Memuat course..."}
+                </h3>
+
+                <p className={`mt-1 text-sm ${mutedText}`}>
+                  Daftar materi pembelajaran course ini
                 </p>
               </div>
             </div>
-          </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-5">
-            <p className="text-sm text-slate-500">Status Course</p>
-            <p className="mt-2 text-lg font-bold capitalize text-slate-800">
-              {course.status === "published" ? "Dipublikasikan" : "Draft"}
-            </p>
-          </div>
-        </div>
-
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          {lessons.length === 0 ? (
-            <div className="px-6 py-16 text-center">
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
-                <BookOpen size={26} />
+            <div className="flex flex-wrap gap-3">
+              <div
+                className={`rounded-xl px-4 py-3 ${
+                  isDark ? "bg-slate-700/70" : "bg-slate-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Layers3
+                    size={17}
+                    className="text-teal-600 dark:text-teal-400"
+                  />
+                  <span className={`text-sm font-semibold ${headingText}`}>
+                    {lessons.length} Materi
+                  </span>
+                </div>
               </div>
 
-              <h3 className="font-semibold text-slate-800">
-                Belum ada lesson
-              </h3>
+              <div
+                className={`rounded-xl px-4 py-3 ${
+                  isDark ? "bg-slate-700/70" : "bg-slate-50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Video
+                    size={17}
+                    className="text-teal-600 dark:text-teal-400"
+                  />
+                  <span className={`text-sm font-semibold ${headingText}`}>
+                    {lessons.filter((lesson) => lesson.video_path).length} Video
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-              <p className="mt-2 text-sm text-slate-500">
-                Tambahkan materi pertama untuk course ini.
+        {/* Daftar materi */}
+        <section
+          className={`overflow-hidden rounded-2xl border shadow-sm ${cardClass}`}
+        >
+          <div
+            className={`flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4 sm:px-6 ${
+              isDark ? "border-slate-700" : "border-slate-100"
+            }`}
+          >
+            <div>
+              <h3 className={`font-bold ${headingText}`}>Daftar Materi</h3>
+              <p className={`mt-1 text-xs ${mutedText}`}>
+                Materi ditampilkan berdasarkan urutan pembelajaran.
+              </p>
+            </div>
+
+            <span
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                isDark
+                  ? "bg-teal-500/15 text-teal-300"
+                  : "bg-teal-50 text-teal-700"
+              }`}
+            >
+              {lessons.length} Lesson
+            </span>
+          </div>
+
+          {fetching ? (
+            <div className="flex min-h-64 items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin text-teal-600" />
+            </div>
+          ) : lessons.length === 0 ? (
+            <div className="flex flex-col items-center px-5 py-16 text-center">
+              <div
+                className={`mb-4 flex h-16 w-16 items-center justify-center rounded-2xl ${
+                  isDark ? "bg-teal-500/10" : "bg-teal-50"
+                }`}
+              >
+                <BookOpen
+                  size={30}
+                  className="text-teal-600 dark:text-teal-400"
+                />
+              </div>
+
+              <h4 className={`text-lg font-bold ${headingText}`}>
+                Belum Ada Materi
+              </h4>
+
+              <p className={`mt-2 max-w-sm text-sm ${mutedText}`}>
+                Course ini belum memiliki materi pembelajaran. Tambahkan materi
+                pertama untuk mulai menyusun pembelajaran.
               </p>
 
               <button
+                type="button"
                 onClick={openCreateModal}
-                className="mt-5 inline-flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700"
+                className="mt-5 inline-flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-700"
               >
                 <Plus size={17} />
-                Tambah Lesson
+                Tambah Materi
               </button>
             </div>
           ) : (
-            <div className="divide-y divide-slate-100">
-              {lessons.map((lesson) => (
+            <div className="divide-y divide-slate-100 dark:divide-slate-700">
+              {lessons.map((lesson, index) => (
                 <div
                   key={lesson.id}
-                  className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center"
+                  className={`flex flex-col gap-4 px-5 py-5 transition sm:flex-row sm:items-center sm:justify-between sm:px-6 ${
+                    isDark ? "hover:bg-slate-700/30" : "hover:bg-slate-50/80"
+                  }`}
                 >
-                  <div className="flex min-w-0 flex-1 items-center gap-4">
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-sm font-bold text-teal-700">
-                      {lesson.sort_order}
+                  <div className="flex min-w-0 items-start gap-4">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-teal-100 text-sm font-bold text-teal-700 dark:bg-teal-500/15 dark:text-teal-300">
+                      {String(lesson.sort_order ?? index + 1).padStart(2, "0")}
                     </div>
 
-                    <div className="min-w-0 flex-1">
-                      <h3 className="truncate font-semibold text-slate-800">
+                    <div className="min-w-0">
+                      <h4
+                        className={`break-words font-semibold ${headingText}`}
+                      >
                         {lesson.title}
-                      </h3>
+                      </h4>
 
-                      <p className="mt-1 line-clamp-2 text-sm text-slate-500">
-                        {lesson.description || "Tidak ada deskripsi."}
+                      <p className={`mt-1 line-clamp-2 text-sm ${mutedText}`}>
+                        {lesson.description || "Tidak ada deskripsi materi."}
                       </p>
 
-                      <p className="mt-2 text-xs text-slate-400">
-                        {lesson.video_status === "ready"
-                          ? `Video tersedia${lesson.video_original_name ? ` • ${lesson.video_original_name}` : ""}`
-                          : "Video belum diunggah"}
-                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {lesson.video_path ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+                            <CheckCircle2 size={13} />
+                            Video tersedia
+                          </span>
+                        ) : (
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              isDark
+                                ? "bg-slate-700 text-slate-300"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            <FileVideo size={13} />
+                            Belum ada video
+                          </span>
+                        )}
+
+                        <span
+                          className={`inline-flex items-center gap-1 text-xs ${mutedText}`}
+                        >
+                          <Clock size={13} />
+                          Urutan {lesson.sort_order}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 sm:justify-end">
+                  <div className="flex shrink-0 items-center gap-2 sm:justify-end">
                     <button
+                      type="button"
                       onClick={() => openEditModal(lesson)}
-                      className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
+                      className={`inline-flex flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition sm:flex-none ${
+                        isDark
+                          ? "border-teal-400/30 bg-teal-500/10 text-teal-300 hover:bg-teal-500/20"
+                          : "border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100"
+                      }`}
                     >
-                      <Pencil size={16} />
+                      <Pencil size={15} />
                       Edit
                     </button>
 
                     <button
-                      onClick={() => handleDelete(lesson)}
-                      className="inline-flex items-center gap-2 rounded-lg border border-red-100 px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50"
+                      type="button"
+                      onClick={() => setDeleteTarget(lesson)}
+                      className={`inline-flex items-center justify-center rounded-lg border p-2 transition ${
+                        isDark
+                          ? "border-red-400/20 text-red-400 hover:bg-red-500/10"
+                          : "border-red-200 text-red-600 hover:bg-red-50"
+                      }`}
+                      title="Hapus materi"
                     >
-                      <Trash2 size={16} />
-                      Hapus
+                      <Trash2 size={17} />
                     </button>
                   </div>
                 </div>
               ))}
             </div>
           )}
-        </div>
+        </section>
+
+        <p className={`mt-5 text-center text-xs ${mutedText}`}>
+          © 2026 EduFlow · Learning Management System
+        </p>
       </div>
 
+      {/* Modal tambah / edit lesson */}
       {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-900/50 p-4">
-          <div className="my-auto w-full max-w-lg rounded-2xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/60 p-3 backdrop-blur-sm sm:p-5"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeModal();
+          }}
+        >
+          <div
+            className={`my-auto w-full max-w-2xl overflow-hidden rounded-2xl border shadow-2xl ${
+              isDark
+                ? "border-slate-700 bg-slate-800"
+                : "border-slate-200 bg-white"
+            }`}
+          >
+            <div
+              className={`flex items-center justify-between border-b px-5 py-4 sm:px-6 ${
+                isDark ? "border-slate-700" : "border-slate-100"
+              }`}
+            >
               <div>
-                <h2 className="text-lg font-bold text-slate-800">
-                  {editingLesson ? "Edit Lesson" : "Tambah Lesson"}
-                </h2>
-
-                <p className="mt-1 text-sm text-slate-500">
+                <h3 className={`text-lg font-bold ${headingText}`}>
+                  {editingLesson ? "Edit Materi" : "Tambah Materi"}
+                </h3>
+                <p className={`mt-1 text-xs ${mutedText}`}>
                   Lengkapi informasi materi pembelajaran.
                 </p>
               </div>
 
               <button
-                onClick={() => setModalOpen(false)}
+                type="button"
+                onClick={closeModal}
                 disabled={saving || uploading || deletingVideo}
-                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 disabled:opacity-50"
-                aria-label="Tutup"
+                className={`rounded-lg p-2 transition ${
+                  isDark
+                    ? "text-slate-400 hover:bg-slate-700 hover:text-white"
+                    : "text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                }`}
               >
                 <X size={20} />
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-5 p-6">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Judul Lesson <span className="text-red-500">*</span>
-                </label>
+            <form onSubmit={handleSubmit}>
+              <div className="max-h-[70vh] space-y-5 overflow-y-auto px-5 py-5 sm:px-6">
+                <div>
+                  <label
+                    className={`mb-2 block text-sm font-semibold ${headingText}`}
+                  >
+                    Judul Materi <span className="text-red-500">*</span>
+                  </label>
 
-                <input
-                  type="text"
-                  required
-                  value={form.title}
-                  onChange={(e) =>
-                    setForm({ ...form, title: e.target.value })
-                  }
-                  placeholder="Contoh: Pengenalan Pemrograman"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
-                />
-              </div>
+                  <input
+                    type="text"
+                    value={form.title}
+                    onChange={(event) =>
+                      setForm({ ...form, title: event.target.value })
+                    }
+                    placeholder="Masukkan judul materi"
+                    required
+                    className={`w-full rounded-xl border px-4 py-3 text-sm outline-none transition focus:ring-2 focus:ring-teal-500/20 ${inputClass}`}
+                  />
+                </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Deskripsi
-                </label>
+                <div>
+                  <label
+                    className={`mb-2 block text-sm font-semibold ${headingText}`}
+                  >
+                    Deskripsi Materi
+                  </label>
 
-                <textarea
-                  rows={4}
-                  value={form.description}
-                  onChange={(e) =>
-                    setForm({ ...form, description: e.target.value })
-                  }
-                  placeholder="Deskripsi singkat materi..."
-                  className="w-full resize-none rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
-                />
-              </div>
+                  <textarea
+                    rows={3}
+                    value={form.description}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        description: event.target.value,
+                      })
+                    }
+                    placeholder="Masukkan deskripsi materi (opsional)"
+                    className={`w-full resize-y rounded-xl border px-4 py-3 text-sm outline-none transition focus:ring-2 focus:ring-teal-500/20 ${inputClass}`}
+                  />
+                </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Urutan Lesson
-                </label>
+                <div>
+                  <label
+                    className={`mb-2 block text-sm font-semibold ${headingText}`}
+                  >
+                    Urutan Materi
+                  </label>
 
-                <input
-                  type="number"
-                  min={1}
-                  required
-                  value={form.sort_order}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      sort_order: Number(e.target.value),
-                    })
-                  }
-                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
-                />
+                  <input
+                    type="number"
+                    min={1}
+                    value={form.sort_order}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        sort_order: Number(event.target.value),
+                      })
+                    }
+                    required
+                    className={`w-full rounded-xl border px-4 py-3 text-sm outline-none transition focus:ring-2 focus:ring-teal-500/20 ${inputClass}`}
+                  />
 
-                <p className="mt-1 text-xs text-slate-400">
-                  Angka lebih kecil akan ditampilkan lebih dahulu.
-                </p>
-              </div>
+                  <p className={`mt-1.5 text-xs ${mutedText}`}>
+                    Angka lebih kecil akan ditampilkan lebih dahulu.
+                  </p>
+                </div>
 
-              <div className="border-t border-slate-100 pt-5">
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Video Pembelajaran
-                </label>
+                {/* Video section */}
+                <div
+                  className={`rounded-xl border p-4 ${
+                    isDark
+                      ? "border-slate-700 bg-slate-900/50"
+                      : "border-slate-200 bg-slate-50"
+                  }`}
+                >
+                  <div className="mb-4 flex items-center gap-2">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300">
+                      <Video size={18} />
+                    </div>
 
-                {editingLesson?.video_path && !selectedVideo && (
-                  <div className="mb-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-                    <video
-                      src={editingLesson.video_path}
-                      controls
-                      preload="metadata"
-                      className="max-h-56 w-full bg-black"
-                    />
+                    <div>
+                      <h4 className={`text-sm font-bold ${headingText}`}>
+                        Video Pembelajaran
+                      </h4>
+                      <p className={`text-xs ${mutedText}`}>
+                        Unggah atau ganti video materi.
+                      </p>
+                    </div>
+                  </div>
 
-                    <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <FileVideo
-                          size={18}
-                          className="shrink-0 text-teal-600"
-                        />
+                  {editingLesson?.video_path && !selectedVideo && (
+                    <div
+                      className={`mb-4 flex flex-col gap-3 rounded-xl border p-3 sm:flex-row sm:items-center sm:justify-between ${
+                        isDark
+                          ? "border-emerald-500/20 bg-emerald-500/5"
+                          : "border-emerald-200 bg-emerald-50"
+                      }`}
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+                          <Play size={18} />
+                        </div>
 
-                        <span className="truncate text-xs text-slate-600">
-                          {editingLesson.video_original_name || "Video materi"}
-                        </span>
+                        <div className="min-w-0">
+                          <p
+                            className={`truncate text-sm font-semibold ${
+                              isDark ? "text-emerald-300" : "text-emerald-800"
+                            }`}
+                          >
+                            {editingLesson.video_original_name ||
+                              "Video tersimpan"}
+                          </p>
+
+                          <p className={`text-xs ${mutedText}`}>
+                            {formatFileSize(editingLesson.video_size)}
+                          </p>
+                        </div>
                       </div>
 
                       <button
                         type="button"
-                        onClick={handleDeleteVideo}
-                        disabled={deletingVideo || saving}
-                        className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-red-100 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        onClick={() => setShowDeleteVideoConfirm(true)}
+                        disabled={deletingVideo}
+                        className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-600 transition hover:bg-red-50 disabled:opacity-50 dark:border-red-400/20 dark:text-red-400 dark:hover:bg-red-500/10"
                       >
-                        {deletingVideo ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          <Trash2 size={14} />
-                        )}
+                        <Trash2 size={14} />
                         Hapus Video
                       </button>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm"
-                  onChange={(e) => handleVideoSelect(e.target.files?.[0])}
-                  disabled={saving || uploading || deletingVideo}
-                  className="hidden"
-                />
-
-                {selectedVideo ? (
-                  <div className="rounded-xl border border-teal-200 bg-teal-50 p-4">
-                    <div className="flex items-start gap-3">
-                      <div className="rounded-lg bg-white p-2 text-teal-600">
-                        <Video size={20} />
-                      </div>
+                  {selectedVideo && (
+                    <div
+                      className={`mb-4 flex items-center gap-3 rounded-xl border p-3 ${
+                        isDark
+                          ? "border-teal-400/20 bg-teal-500/5"
+                          : "border-teal-200 bg-teal-50"
+                      }`}
+                    >
+                      <FileVideo
+                        size={23}
+                        className="shrink-0 text-teal-600 dark:text-teal-400"
+                      />
 
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-slate-800">
+                        <p
+                          className={`truncate text-sm font-semibold ${headingText}`}
+                        >
                           {selectedVideo.name}
                         </p>
-
-                        <p className="mt-1 text-xs text-slate-500">
+                        <p className={`text-xs ${mutedText}`}>
                           {formatFileSize(selectedVideo.size)}
                         </p>
                       </div>
 
                       <button
                         type="button"
-                        onClick={() => {
-                          setSelectedVideo(null);
-                          if (fileInputRef.current) {
-                            fileInputRef.current.value = "";
-                          }
-                        }}
-                        disabled={saving || uploading}
-                        className="rounded-lg p-1 text-slate-400 hover:bg-white hover:text-red-500"
+                        onClick={resetVideoForm}
+                        className={`rounded-lg p-1.5 ${mutedText}`}
                       >
-                        <X size={18} />
+                        <X size={17} />
                       </button>
                     </div>
-                  </div>
-                ) : (
+                  )}
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm"
+                    onChange={handleVideoSelect}
+                    className="hidden"
+                  />
+
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={saving || uploading || deletingVideo}
-                    className="flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-7 text-center transition hover:border-teal-400 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={saving || uploading}
+                    className={`flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center transition disabled:opacity-50 ${
+                      isDark
+                        ? "border-slate-600 hover:border-teal-400 hover:bg-teal-500/5"
+                        : "border-slate-300 hover:border-teal-500 hover:bg-teal-50/50"
+                    }`}
                   >
-                    <Upload size={25} className="mb-2 text-teal-600" />
+                    <div
+                      className={`mb-2 flex h-10 w-10 items-center justify-center rounded-xl ${
+                        isDark
+                          ? "bg-slate-700 text-teal-300"
+                          : "bg-teal-100 text-teal-700"
+                      }`}
+                    >
+                      <Upload size={19} />
+                    </div>
 
-                    <span className="text-sm font-semibold text-slate-700">
-                      {editingLesson?.video_path
-                        ? "Ganti Video"
+                    <span className={`text-sm font-semibold ${headingText}`}>
+                      {selectedVideo || editingLesson?.video_path
+                        ? "Pilih Video Pengganti"
                         : "Pilih Video"}
                     </span>
 
-                    <span className="mt-1 text-xs text-slate-400">
-                      MP4, MOV, AVI, MKV, WEBM • Maksimal 500 MB
+                    <span className={`mt-1 text-xs ${mutedText}`}>
+                      MP4, MOV, AVI, MKV, atau WebM · Maksimal 500 MB
                     </span>
                   </button>
-                )}
 
-                {uploading && (
-                  <div className="mt-4">
-                    <div className="mb-2 flex justify-between text-xs text-slate-600">
-                      <span>Mengunggah video...</span>
-                      <span>{uploadProgress}%</span>
-                    </div>
+                  {uploading && (
+                    <div className="mt-4">
+                      <div className="mb-2 flex justify-between text-xs">
+                        <span className={mutedText}>Mengunggah video...</span>
+                        <span className={`font-semibold ${headingText}`}>
+                          {uploadProgress}%
+                        </span>
+                      </div>
 
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-200">
                       <div
-                        className="h-full rounded-full bg-teal-600 transition-all"
-                        style={{ width: `${uploadProgress}%` }}
-                      />
+                        className={`h-2 overflow-hidden rounded-full ${
+                          isDark ? "bg-slate-700" : "bg-slate-200"
+                        }`}
+                      >
+                        <div
+                          className="h-full rounded-full bg-teal-600 transition-all"
+                          style={{ width: `${uploadProgress}%` }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                <p className="mt-2 text-xs text-slate-400">
-                  Video akan disimpan di Cloudinary dan dapat diputar oleh siswa.
-                </p>
+                  )}
+                </div>
               </div>
 
-              <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-5 sm:flex-row sm:justify-end">
+              <div
+                className={`flex flex-col-reverse gap-3 border-t px-5 py-4 sm:flex-row sm:justify-end sm:px-6 ${
+                  isDark ? "border-slate-700" : "border-slate-100"
+                }`}
+              >
                 <button
                   type="button"
-                  onClick={() => setModalOpen(false)}
+                  onClick={closeModal}
                   disabled={saving || uploading || deletingVideo}
-                  className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  className={`rounded-xl border px-5 py-2.5 text-sm font-semibold transition disabled:opacity-50 ${
+                    isDark
+                      ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                      : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
                 >
                   Batal
                 </button>
@@ -700,7 +1023,7 @@ function LessonsContent() {
                 <button
                   type="submit"
                   disabled={saving || uploading || deletingVideo}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {saving || uploading ? (
                     <Loader2 size={17} className="animate-spin" />
@@ -709,13 +1032,128 @@ function LessonsContent() {
                   )}
 
                   {uploading
-                    ? "Mengunggah Video..."
+                    ? "Mengunggah..."
                     : saving
                       ? "Menyimpan..."
-                      : "Simpan Lesson"}
+                      : editingLesson
+                        ? "Simpan Perubahan"
+                        : "Tambah Materi"}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Konfirmasi hapus lesson */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div
+            className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl ${
+              isDark
+                ? "border-slate-700 bg-slate-800"
+                : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400">
+              <AlertTriangle size={23} />
+            </div>
+
+            <h3 className={`text-lg font-bold ${headingText}`}>
+              Hapus Materi?
+            </h3>
+
+            <p className={`mt-2 text-sm leading-relaxed ${mutedText}`}>
+              Apakah Anda yakin ingin menghapus materi{" "}
+              <span className={`font-semibold ${headingText}`}>
+                "{deleteTarget.title}"
+              </span>
+              ? Tindakan ini tidak dapat dibatalkan.
+            </p>
+
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className={`rounded-xl border px-5 py-2.5 text-sm font-semibold transition disabled:opacity-50 ${
+                  isDark
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Batal
+              </button>
+
+              <button
+                type="button"
+                onClick={confirmDeleteLesson}
+                disabled={deleting}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-60"
+              >
+                {deleting ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Trash2 size={16} />
+                )}
+                {deleting ? "Menghapus..." : "Ya, Hapus"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Konfirmasi hapus video */}
+      {showDeleteVideoConfirm && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div
+            className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl ${
+              isDark
+                ? "border-slate-700 bg-slate-800"
+                : "border-slate-200 bg-white"
+            }`}
+          >
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400">
+              <AlertTriangle size={23} />
+            </div>
+
+            <h3 className={`text-lg font-bold ${headingText}`}>
+              Hapus Video?
+            </h3>
+
+            <p className={`mt-2 text-sm leading-relaxed ${mutedText}`}>
+              Apakah Anda yakin ingin menghapus video dari materi ini? Video
+              yang dihapus tidak dapat dipulihkan.
+            </p>
+
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setShowDeleteVideoConfirm(false)}
+                disabled={deletingVideo}
+                className={`rounded-xl border px-5 py-2.5 text-sm font-semibold transition disabled:opacity-50 ${
+                  isDark
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Batal
+              </button>
+
+              <button
+                type="button"
+                onClick={confirmDeleteVideo}
+                disabled={deletingVideo}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-60"
+              >
+                {deletingVideo ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Trash2 size={16} />
+                )}
+                {deletingVideo ? "Menghapus..." : "Ya, Hapus Video"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -727,7 +1165,7 @@ export default function LessonsPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-900">
           <Loader2 className="h-8 w-8 animate-spin text-teal-600" />
         </div>
       }
