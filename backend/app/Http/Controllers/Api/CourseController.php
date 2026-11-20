@@ -26,7 +26,9 @@ class CourseController extends Controller
     {
         $course = Course::where('slug', $slug)
             ->where('status', 'published')
-            ->with('lessons:id,course_id,title,description,sort_order')
+            ->with(['lessons' => function ($query) {
+                $query->orderBy('sort_order');
+            }])
             ->firstOrFail();
 
         return response()->json($course);
